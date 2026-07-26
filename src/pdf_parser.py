@@ -256,35 +256,72 @@ def parse_format_b(pdf, snapshot: str) -> dict:
         t2_df = pd.DataFrame(rows)
         logger.info("[%s] Format B - Table-2: %d states", snapshot, len(t2_df))
 
-    # 3. Parse Table-7 (Project List: Ongoing) - sample first 30 pages
+    # Extract state project counts from Table-2 to map projects in Table-7 to their correct states
+    state_counts = []
+    if not t2_df.empty:
+        for _, row in t2_df.iterrows():
+            st_name = row.get("state", "").strip()
+            proj_cnt = row.get("total_projects")
+            if st_name and proj_cnt:
+                state_counts.append((st_name, int(proj_cnt)))
+
+    # 3. Parse Table-7 (or Table-6 in Sept) sample (scan 80 pages for maximum project coverage)
+    t7_df = pd.DataFrame()
     t7_start = -1
     for idx in range(15, len(pdf.pages)):  # Skip TOC (pages 1-15)
         text = pdf.pages[idx].extract_text() or ""
         if "ongoing projects as of" in text.lower():
             t7_start = idx
             break
+            
     if t7_start != -1:
         rows = []
-        for idx in range(t7_start, min(t7_start + 30, len(pdf.pages))):
+        current_sector = "Unknown"
+        logger.info("[%s] Parsing Ongoing Projects list starting on PDF page %d...", snapshot, t7_start+1)
+        for idx in range(t7_start, min(t7_start + 80, len(pdf.pages))):
             page = pdf.pages[idx]
             tables = page.extract_tables()
             for t in tables:
                 for cells in t:
-                    if len(cells) >= 9:
-                        sl = str(cells[2]).strip().replace("\n", "")
+                    if len(cells) >= 7:
+                        # Extract Sl No (always cells[-7])
+                        sl = str(cells[-7]).strip().replace("\n", "")
                         if sl.isdigit():
-                            project = str(cells[3]).split("\n")[0].strip()
+                            sl_val = int(sl)
                             
-                            cost_text = str(cells[6])
+                            # Keep track of current sector (Sector is cells[1] in 9-col, cells[0] in 8-col)
+                            if len(cells) == 9:
+                                sec_val = str(cells[1]).replace("\n", " ").strip()
+                                if sec_val:
+                                    current_sector = sec_val
+                            elif len(cells) == 8:
+                                sec_val = str(cells[0]).replace("\n", " ").strip()
+                                if sec_val:
+                                    current_sector = sec_val
+                                    
+                            # Determine state sequentially from state_counts
+                            current_state = "Unknown"
+                            if state_counts:
+                                state_cumulative = 0
+                                for st_name, proj_cnt in state_counts:
+                                    state_cumulative += proj_cnt
+                                    if sl_val <= state_cumulative:
+                                        current_state = st_name
+                                        break
+                                        
+                            project = str(cells[-6]).split("\n")[0].strip()
+                            cost_text = str(cells[-3])
                             cost_lines = [l.strip() for l in cost_text.split("\n") if l.strip()]
+                            
+                            # Clean costs
                             orig_c = _clean_float(cost_lines[0])
                             ant_c = orig_c
                             for l in cost_lines:
                                 if "{" in l and "}" in l:
                                     ant_c = _clean_float(l.replace("{", "").replace("}", ""))
                                     break
-                            
-                            date_text = str(cells[5])
+                                    
+                            date_text = str(cells[-4])
                             date_lines = [l.strip() for l in date_text.split("\n") if l.strip()]
                             orig_doc = date_lines[0] if len(date_lines) > 0 else ""
                             ant_doc = date_lines[-1] if len(date_lines) > 0 else ""
@@ -292,7 +329,7 @@ def parse_format_b(pdf, snapshot: str) -> dict:
                                 if "{" in l and "}" in l:
                                     ant_doc = l.replace("{", "").replace("}", "")
                                     break
-                            
+                                    
                             # Estimate delay in months
                             delay = 0.0
                             try:
@@ -307,6 +344,8 @@ def parse_format_b(pdf, snapshot: str) -> dict:
                                 
                             rows.append({
                                 "project_name": project,
+                                "state": current_state,
+                                "sector": current_sector,
                                 "original_cost": orig_c,
                                 "anticipated_cost": ant_c,
                                 "original_doc": orig_doc,
@@ -315,72 +354,31 @@ def parse_format_b(pdf, snapshot: str) -> dict:
                                 "delay_months": delay,
                             })
         t7_df = pd.DataFrame(rows)
-        logger.info("[%s] Format B - Table-7 Sample: %d projects", snapshot, len(t7_df))
+        logger.info("[%s] Format B - Extracted Sample: %d projects", snapshot, len(t7_df))
 
     # Adapt Format B Table 7 samples to match the Format A structured outputs
     # so they map directly to our SQLite table schema:
     t16_mapped = t7_df.copy()
     
     ann1_mapped = pd.DataFrame()
-    if t7_start != -1:
+    if not t7_df.empty:
         ann1_rows = []
-        current_sector = ""
-        for idx in range(t7_start, min(t7_start + 30, len(pdf.pages))):
-            page = pdf.pages[idx]
-            tables = page.extract_tables()
-            for t in tables:
-                for cells in t:
-                    if len(cells) >= 9:
-                        sl = str(cells[2]).strip().replace("\n", "")
-                        if sl.isdigit():
-                            sector_val = str(cells[1]).replace("\n", " ").strip()
-                            if sector_val:
-                                current_sector = sector_val
-                            project = str(cells[3]).split("\n")[0].strip()
-                            
-                            cost_text = str(cells[6])
-                            cost_lines = [l.strip() for l in cost_text.split("\n") if l.strip()]
-                            orig_c = _clean_float(cost_lines[0])
-                            ant_c = orig_c
-                            for l in cost_lines:
-                                if "{" in l and "}" in l:
-                                    ant_c = _clean_float(l.replace("{", "").replace("}", ""))
-                                    break
-                            
-                            date_text = str(cells[5])
-                            date_lines = [l.strip() for l in date_text.split("\n") if l.strip()]
-                            orig_doc = date_lines[0] if len(date_lines) > 0 else ""
-                            ant_doc = date_lines[-1] if len(date_lines) > 0 else ""
-                            for l in date_lines:
-                                if "{" in l and "}" in l:
-                                    ant_doc = l.replace("{", "").replace("}", "")
-                                    break
-                            
-                            cor_pct = 0.0
-                            if orig_c and orig_c > 0:
-                                cor_pct = round((ant_c - orig_c) / orig_c * 100, 2)
-                                
-                            delay = 0.0
-                            try:
-                                m1 = re.search(r"(\d+)/(\d+)", orig_doc)
-                                m2 = re.search(r"(\d+)/(\d+)", ant_doc)
-                                if m1 and m2:
-                                    y1, m1_val = int(m1.group(2)), int(m1.group(1))
-                                    y2, m2_val = int(m2.group(2)), int(m2.group(1))
-                                    delay = max(0, (y2 - y1) * 12 + (m2_val - m1_val))
-                            except Exception:
-                                pass
-                                
-                            ann1_rows.append({
-                                "project_name": project,
-                                "sector": current_sector,
-                                "doc_original": orig_doc,
-                                "doc_anticipated": ant_doc,
-                                "original_cost": orig_c,
-                                "anticipated_cost": ant_c,
-                                "cor_pct": cor_pct,
-                                "tor_months": delay,
-                            })
+        for _, row in t7_df.iterrows():
+            orig_c = row["original_cost"]
+            ant_c = row["anticipated_cost"]
+            cor_pct = 0.0
+            if orig_c and orig_c > 0:
+                cor_pct = round((ant_c - orig_c) / orig_c * 100, 2)
+            ann1_rows.append({
+                "project_name": row["project_name"],
+                "sector": row["sector"],
+                "doc_original": row["original_doc"],
+                "doc_anticipated": row["this_doc"],
+                "original_cost": orig_c,
+                "anticipated_cost": ant_c,
+                "cor_pct": cor_pct,
+                "tor_months": row["delay_months"],
+            })
         ann1_mapped = pd.DataFrame(ann1_rows)
         logger.info("[%s] Format B - Mapped Ann1: %d projects", snapshot, len(ann1_mapped))
 

@@ -24,11 +24,10 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
-import seaborn as sns
 
 from src import database as db
 from src import analysis
-from src.model import predict, get_feature_importance, get_known_sectors
+from src.model import predict, get_feature_importance, get_known_sectors, get_known_states
 
 # ── Page config ─────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -627,6 +626,7 @@ elif page == "🔮 Forecast Sandbox":
         with col_input:
             st.markdown('<div class="section-header">⚙️ Project Parameters</div>', unsafe_allow_html=True)
             sector_choice = st.selectbox("Sector", options=sectors)
+            state_choice = st.selectbox("State", options=get_known_states())
             original_cost = st.number_input(
                 "Original Sanctioned Cost (₹ crore)",
                 min_value=150.0, max_value=200000.0, value=1000.0, step=100.0,
@@ -637,7 +637,7 @@ elif page == "🔮 Forecast Sandbox":
         with col_results:
             if predict_btn:
                 with st.spinner("Running model…"):
-                    result = predict(sector_choice, original_cost)
+                    result = predict(sector_choice, state_choice, original_cost)
 
                 cor = result.get("cost_overrun_pct")
                 delay = result.get("delay_months")

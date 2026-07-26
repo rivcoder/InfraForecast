@@ -157,6 +157,12 @@ def delayed_projects_clean() -> pd.DataFrame:
     dp["sector"] = dp["project_name"].apply(
         lambda n: sector_map.get(str(n).strip().upper()[:60], "Unknown")
     )
+    
+    # Fill NaN states (e.g. from Format A) with 'Unknown'
+    if "state" in dp.columns:
+        dp["state"] = dp["state"].fillna("Unknown").apply(lambda s: str(s).strip() if str(s).strip() else "Unknown")
+    else:
+        dp["state"] = "Unknown"
 
     # Filter out rows with missing key fields
     dp = dp.dropna(subset=["original_cost", "delay_months"])

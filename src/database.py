@@ -25,6 +25,7 @@ def create_tables(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS delayed_projects (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
             project_name        TEXT    NOT NULL,
+            state               TEXT,
             original_cost       REAL,
             anticipated_cost    REAL,
             cost_overrun_pct    REAL,
@@ -77,7 +78,7 @@ def insert_delayed_projects(conn: sqlite3.Connection, df: pd.DataFrame) -> None:
             axis=1,
         )
     cols = [
-        "project_name", "original_cost", "anticipated_cost", "cost_overrun_pct",
+        "project_name", "state", "original_cost", "anticipated_cost", "cost_overrun_pct",
         "original_doc", "last_doc", "this_doc", "delay_months", "snapshot"
     ]
     # Keep only cols that exist in df

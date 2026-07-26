@@ -118,7 +118,7 @@ class TestModelFeatures(unittest.TestCase):
     def test_predict_returns_dict(self):
         """predict() should return a dict with correct keys even with no trained model."""
         from src.model import predict
-        result = predict("Railways", 1000.0)
+        result = predict("Railways", "PUNJAB", 1000.0)
         self.assertIsInstance(result, dict)
         self.assertIn("cost_overrun_pct", result)
         self.assertIn("delay_months", result)

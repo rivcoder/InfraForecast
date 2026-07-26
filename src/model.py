@@ -29,10 +29,11 @@ MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "mo
 
 
 def _build_pipeline() -> Pipeline:
-    """Build the sklearn pipeline: one-hot sector + scaled log-cost -> Ridge."""
+    """Build the sklearn pipeline: one-hot sector & state + scaled log-cost -> Ridge."""
     preprocessor = ColumnTransformer(
         transformers=[
             ("sector_enc", OneHotEncoder(handle_unknown="ignore", sparse_output=False), ["sector"]),
+            ("state_enc", OneHotEncoder(handle_unknown="ignore", sparse_output=False), ["state"]),
             ("cost_scaler", StandardScaler(), ["log_original_cost"]),
         ],
         remainder="drop",
@@ -53,39 +54,47 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
 def train_models(df: pd.DataFrame) -> dict:
     """
     Train both models. Returns dict with models + feature importance DataFrames.
-    df must contain: sector, original_cost, cost_overrun_pct, delay_months
+    df must contain: sector, state, original_cost, cost_overrun_pct, delay_months
     """
     if df.empty or len(df) < 10:
         logger.warning("Insufficient data for training (%d rows). Need >= 10.", len(df))
         return {}
 
     df = prepare_features(df)
-    feature_cols = ["sector", "log_original_cost"]
+    feature_cols = ["sector", "state", "log_original_cost"]
 
     results = {}
 
     for target, label in [("cost_overrun_pct", "cor"), ("delay_months", "delay")]:
         valid = df.dropna(subset=[target] + feature_cols).copy()
+        # Filter target to be finite and positive/zero for log transform
         valid = valid[np.isfinite(valid[target])]
+        valid = valid[valid[target] >= 0]
 
         if len(valid) < 10:
             logger.warning("Not enough valid rows for %s model (%d)", target, len(valid))
             continue
 
         X = valid[feature_cols]
-        y = valid[target]
+        # Log transform target variable to handle extreme skew/outliers
+        y = np.log1p(valid[target])
 
         pipe = _build_pipeline()
         pipe.fit(X, y)
 
-        # Cross-validation R²
+        # Cross-validation R² on log scale target
         cv_scores = cross_val_score(pipe, X, y, cv=min(5, len(valid) // 2), scoring="r2")
-        logger.info("[%s] Ridge R² = %.3f ± %.3f (n=%d)", label, cv_scores.mean(), cv_scores.std(), len(valid))
+        logger.info("[%s] Ridge Log-R² = %.3f ± %.3f (n=%d)", label, cv_scores.mean(), cv_scores.std(), len(valid))
 
         # Feature importance (Ridge coefficients after preprocessing)
-        enc: OneHotEncoder = pipe.named_steps["preprocessor"].named_transformers_["sector_enc"]
-        sector_names = [f"sector={c}" for c in enc.categories_[0]]
-        feature_names = sector_names + ["log_original_cost"]
+        preprocessor = pipe.named_steps["preprocessor"]
+        sector_enc = preprocessor.named_transformers_["sector_enc"]
+        state_enc = preprocessor.named_transformers_["state_enc"]
+        
+        sector_names = [f"sector={c}" for c in sector_enc.categories_[0]]
+        state_names = [f"state={c}" for c in state_enc.categories_[0]]
+        feature_names = sector_names + state_names + ["log_original_cost"]
+        
         coefs = pipe.named_steps["ridge"].coef_
 
         importance_df = pd.DataFrame({
@@ -121,13 +130,14 @@ def load_model(label: str):
     return joblib.load(path)
 
 
-def predict(sector: str, original_cost_cr: float) -> dict:
+def predict(sector: str, state: str, original_cost_cr: float) -> dict:
     """
     Single-point prediction for Streamlit sandbox.
     Returns {'cost_overrun_pct': float, 'delay_months': float}
     """
     input_df = pd.DataFrame([{
         "sector": sector,
+        "state": state,
         "log_original_cost": np.log1p(max(0, original_cost_cr)),
     }])
 
@@ -136,8 +146,10 @@ def predict(sector: str, original_cost_cr: float) -> dict:
         model = load_model(label)
         if model is not None:
             try:
-                pred = model.predict(input_df)[0]
-                output[key] = max(0.0, round(float(pred), 2))
+                pred_log = model.predict(input_df)[0]
+                # Inverse transform of log1p: expm1
+                pred_orig = np.expm1(pred_log)
+                output[key] = max(0.0, round(float(pred_orig), 2))
             except Exception as e:
                 logger.warning("Prediction failed for %s: %s", label, e)
                 output[key] = None
@@ -162,6 +174,18 @@ def get_known_sectors() -> list[str]:
         return []
     try:
         enc = model.named_steps["preprocessor"].named_transformers_["sector_enc"]
+        return list(enc.categories_[0])
+    except Exception:
+        return []
+
+
+def get_known_states() -> list[str]:
+    """Return list of states seen during training (from saved OHE categories)."""
+    model = load_model("cor")
+    if model is None:
+        return []
+    try:
+        enc = model.named_steps["preprocessor"].named_transformers_["state_enc"]
         return list(enc.categories_[0])
     except Exception:
         return []
