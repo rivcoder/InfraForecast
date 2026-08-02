@@ -18,11 +18,11 @@ import joblib
 import json
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import Ridge
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import cross_val_score, GroupKFold
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "mo
 
 
 def _build_pipeline() -> Pipeline:
-    """Build the sklearn pipeline: one-hot sector & state + scaled log-cost -> Ridge."""
+    """Build the sklearn pipeline: one-hot sector & state + scaled log-cost -> Random Forest."""
     preprocessor = ColumnTransformer(
         transformers=[
             ("sector_enc", OneHotEncoder(handle_unknown="ignore", sparse_output=False), ["sector"]),
@@ -41,7 +41,7 @@ def _build_pipeline() -> Pipeline:
     )
     return Pipeline([
         ("preprocessor", preprocessor),
-        ("ridge", Ridge(alpha=1.0)),
+        ("rf", RandomForestRegressor(max_depth=8, n_estimators=100, random_state=42)),
     ])
 
 
@@ -50,6 +50,15 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["log_original_cost"] = np.log1p(df["original_cost"].fillna(0))
     return df
+
+
+def _clean_group_name(name: str) -> str:
+    """Normalize project names by removing punctuation and extra spacing, keeping the full string."""
+    s = str(name).strip().upper()
+    # Strip non-alphanumeric (keep spaces)
+    s = "".join([c for c in s if c.isalnum() or c.isspace()])
+    # Single spaces
+    return " ".join(s.split())
 
 
 def train_models(df: pd.DataFrame) -> dict:
@@ -83,11 +92,13 @@ def train_models(df: pd.DataFrame) -> dict:
         pipe = _build_pipeline()
         pipe.fit(X, y)
 
-        # Cross-validation R² on log scale target
-        cv_scores = cross_val_score(pipe, X, y, cv=min(5, len(valid) // 2), scoring="r2")
-        logger.info("[%s] Ridge Log-R² = %.3f ± %.3f (n=%d)", label, cv_scores.mean(), cv_scores.std(), len(valid))
+        # Cross-validation R² on log scale target with GroupKFold (disjoint project groups)
+        gkf = GroupKFold(n_splits=5)
+        groups = valid["project_name"].apply(_clean_group_name)
+        cv_scores = cross_val_score(pipe, X, y, cv=gkf, groups=groups, scoring="r2")
+        logger.info("[%s] RF GroupKFold Log-R² = %.3f ± %.3f (n=%d)", label, cv_scores.mean(), cv_scores.std(), len(valid))
 
-        # Feature importance (Ridge coefficients after preprocessing)
+        # Feature importance (Random Forest importances after preprocessing)
         preprocessor = pipe.named_steps["preprocessor"]
         sector_enc = preprocessor.named_transformers_["sector_enc"]
         state_enc = preprocessor.named_transformers_["state_enc"]
@@ -96,12 +107,12 @@ def train_models(df: pd.DataFrame) -> dict:
         state_names = [f"state={c}" for c in state_enc.categories_[0]]
         feature_names = sector_names + state_names + ["log_original_cost"]
         
-        coefs = pipe.named_steps["ridge"].coef_
+        importances = pipe.named_steps["rf"].feature_importances_
 
         importance_df = pd.DataFrame({
             "feature": feature_names,
-            "coefficient": coefs,
-            "abs_coefficient": np.abs(coefs),
+            "coefficient": importances,
+            "abs_coefficient": importances,
         }).sort_values("abs_coefficient", ascending=False).reset_index(drop=True)
 
         os.makedirs(MODEL_DIR, exist_ok=True)
@@ -112,11 +123,13 @@ def train_models(df: pd.DataFrame) -> dict:
         joblib.dump(pipe, model_path)
         importance_df.to_csv(importance_path, index=False)
         
-        # Save training metadata to clamp predictions during sandbox testing
+        # Save training metadata to clamp predictions during sandbox testing and report R² metrics
         metadata = {
             "max_target": float(valid[target].max()) if len(valid) > 0 else 500.0,
             "mean_target": float(valid[target].mean()) if len(valid) > 0 else 0.0,
-            "n_samples": int(len(valid))
+            "n_samples": int(len(valid)),
+            "r2_mean": float(cv_scores.mean()),
+            "r2_std": float(cv_scores.std())
         }
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=4)
