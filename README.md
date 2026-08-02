@@ -39,11 +39,3 @@ It wasn't. The MoSPI dataset tracks the same physical projects across multiple m
 - Time Delay: **R² = 0.107 (±0.044)**
 
 Both beat the naive mean baseline on projects unseen during training. The scores are modest by design — overruns on public infrastructure are driven heavily by factors outside this dataset (land acquisition disputes, contractor solvency, regulatory delays) — so predictions are best read as **relative risk indicators**, not precise forecasts. Feature importances (Random Forest split-gain) are shown in the dashboard alongside the prediction.
-
----
-
-## Data Citation
-> Ministry of Statistics and Programme Implementation (MoSPI), Government of India.  
-> *Flash Report on Central Sector Infrastructure Projects Costing ₹150 Crore and Above.*  
-> Monthly series, April–September 2024.  
-> [https://mospi.gov.in](https://mospi.gov.in)
