@@ -43,45 +43,53 @@ from src.analysis import delayed_projects_clean
 from src.model import train_models
 
 
-def run():
+def run() -> dict:
     logger.info("=" * 60)
     logger.info("InfraForecast Pipeline Starting")
     logger.info("=" * 60)
 
     # ── Step 1 & 2: Download + Parse ───────────────────────────────
     logger.info("Step 1/3: Downloading and parsing MoSPI Flash Reports...")
-    report_data = parse_all_reports()
+    try:
+        report_data = parse_all_reports()
+    except Exception as e:
+        logger.error("Download/Parsing phase failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"Parsing failed: {str(e)}"}
 
     # ── Step 3: Insert into DB ─────────────────────────────────────
     logger.info("Step 2/3: Inserting parsed data into SQLite...")
     conn = db.get_connection()
-    db.create_tables(conn)
+    try:
+        db.create_tables(conn)
 
-    total_t16 = total_ann1 = total_ann2 = 0
-    for snapshot, tables in report_data.items():
-        t16 = tables.get("t16")
-        ann1 = tables.get("ann1")
-        ann2 = tables.get("ann2")
+        total_t16 = total_ann1 = total_ann2 = 0
+        for snapshot, tables in report_data.items():
+            t16 = tables.get("t16")
+            ann1 = tables.get("ann1")
+            ann2 = tables.get("ann2")
 
-        if t16 is not None and not t16.empty:
-            db.insert_delayed_projects(conn, t16)
-            total_t16 += len(t16)
-        else:
-            logger.warning("[%s] T16 (delayed projects) is empty", snapshot)
+            if t16 is not None and not t16.empty:
+                db.insert_delayed_projects(conn, t16)
+                total_t16 += len(t16)
+            else:
+                logger.warning("[%s] T16 (delayed projects) is empty", snapshot)
 
-        if ann1 is not None and not ann1.empty:
-            db.insert_sector_focused(conn, ann1)
-            total_ann1 += len(ann1)
-        else:
-            logger.warning("[%s] Ann1 (sector focused) is empty", snapshot)
+            if ann1 is not None and not ann1.empty:
+                db.insert_sector_focused(conn, ann1)
+                total_ann1 += len(ann1)
+            else:
+                logger.warning("[%s] Ann1 (sector focused) is empty", snapshot)
 
-        if ann2 is not None and not ann2.empty:
-            db.insert_state_summary(conn, ann2)
-            total_ann2 += len(ann2)
-        else:
-            logger.warning("[%s] Ann2 (state summary) is empty", snapshot)
-
-    conn.close()
+            if ann2 is not None and not ann2.empty:
+                db.insert_state_summary(conn, ann2)
+                total_ann2 += len(ann2)
+            else:
+                logger.warning("[%s] Ann2 (state summary) is empty", snapshot)
+    except Exception as e:
+        logger.error("Database insertion failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"Database insertion failed: {str(e)}"}
+    finally:
+        conn.close()
 
     stats = db.get_db_stats()
     logger.info("DB stats -> delayed_projects: %d, sector_focused: %d, state_summary: %d",
@@ -91,20 +99,37 @@ def run():
 
     # ── Step 4: Train models ────────────────────────────────────────
     logger.info("Step 3/3: Training Ridge regression models...")
-    df = delayed_projects_clean()
-    if not df.empty:
-        results = train_models(df)
-        for label, info in results.items():
-            logger.info(
-                "  [%s] R²=%.3f (±%.3f) on %d samples",
-                label, info["r2_mean"], info["r2_std"], info["n_samples"]
-            )
-    else:
-        logger.warning("No training data available — models not trained.")
+    model_stats = {}
+    try:
+        df = delayed_projects_clean()
+        if not df.empty:
+            results = train_models(df)
+            for label, info in results.items():
+                logger.info(
+                    "  [%s] R²=%.3f (±%.3f) on %d samples",
+                    label, info["r2_mean"], info["r2_std"], info["n_samples"]
+                )
+                model_stats[label] = {
+                    "r2_mean": float(info["r2_mean"]),
+                    "r2_std": float(info["r2_std"]),
+                    "n_samples": int(info["n_samples"])
+                }
+        else:
+            logger.warning("No training data available — models not trained.")
+    except Exception as e:
+        logger.error("Model training failed: %s", e, exc_info=True)
+        return {"success": False, "error": f"Model training failed: {str(e)}"}
 
     logger.info("=" * 60)
     logger.info("Pipeline complete! Run: streamlit run src/app.py")
     logger.info("=" * 60)
+
+    return {
+        "success": True,
+        "db_stats": stats,
+        "model_stats": model_stats
+    }
+
 
 
 if __name__ == "__main__":

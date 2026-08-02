@@ -43,21 +43,58 @@ HEADERS = {
     )
 }
 
+def _is_valid_pdf(fpath: str) -> bool:
+    """Check if file exists, is non-empty, and has a valid PDF header."""
+    if not os.path.exists(fpath) or os.path.getsize(fpath) == 0:
+        return False
+    try:
+        with open(fpath, "rb") as f:
+            header = f.read(5)
+            return header.startswith(b"%PDF-")
+    except Exception:
+        return False
+
 def ensure_pdf(report: dict) -> str:
-    """Download PDF if not cached; return local path."""
+    """Download PDF if not cached or corrupt; return local path."""
     os.makedirs(PDF_DIR, exist_ok=True)
     fname = report["url"].split("/")[-1]
     fpath = os.path.join(PDF_DIR, fname)
+    
     if os.path.exists(fpath):
-        logger.info("Cache hit: %s", fname)
-        return fpath
-    logger.info("Downloading %s ...", report["month"])
-    resp = requests.get(report["url"], headers=HEADERS, timeout=60, verify=False)
-    resp.raise_for_status()
-    with open(fpath, "wb") as f:
-        f.write(resp.content)
-    logger.info("Saved %s (%.1f MB)", fname, len(resp.content) / 1e6)
-    return fpath
+        if _is_valid_pdf(fpath):
+            logger.info("Cache hit: %s", fname)
+            return fpath
+        else:
+            logger.warning("Corrupt or invalid PDF in cache: %s. Re-downloading...", fname)
+            try:
+                os.remove(fpath)
+            except Exception as e:
+                logger.error("Failed to delete corrupt file %s: %s", fpath, e)
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            logger.info("Downloading %s (Attempt %d/%d)...", report["month"], attempt + 1, max_retries)
+            resp = requests.get(report["url"], headers=HEADERS, timeout=60, verify=False)
+            resp.raise_for_status()
+            with open(fpath, "wb") as f:
+                f.write(resp.content)
+            
+            if _is_valid_pdf(fpath):
+                logger.info("Saved %s (%.1f MB)", fname, len(resp.content) / 1e6)
+                return fpath
+            else:
+                logger.warning("Downloaded file %s is not a valid PDF. Retrying...", fname)
+                try:
+                    os.remove(fpath)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error("Download attempt %d failed: %s", attempt + 1, e)
+            if attempt == max_retries - 1:
+                raise
+    raise RuntimeError(f"Failed to download a valid PDF for {report['month']}")
+
 
 def detect_format(pdf) -> str:
     """Identify report format style (FormatA = old style, FormatB = new PAIMANA style)."""

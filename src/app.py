@@ -24,6 +24,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+import seaborn as sns
 
 from src import database as db
 from src import analysis
@@ -63,15 +64,14 @@ html, body, [class*="css"] {
 
 /* KPI cards */
 .kpi-card {
-    background: linear-gradient(135deg, rgba(22,27,34,0.9) 0%, rgba(33,38,45,0.9) 100%);
+    background: linear-gradient(135deg, rgba(22,27,34,0.95) 0%, rgba(33,38,45,0.95) 100%);
     border: 1px solid #30363d;
     border-radius: 12px;
     padding: 20px 24px;
     backdrop-filter: blur(10px);
-    transition: all 0.2s ease;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
 }
-.kpi-card:hover { border-color: #58a6ff; transform: translateY(-2px); }
 .kpi-label { font-size: 0.75rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px; }
 .kpi-value { font-size: 2rem; font-weight: 700; color: #f0f6fc; line-height: 1.1; }
 .kpi-unit  { font-size: 0.8rem; color: #58a6ff; margin-top: 4px; }
@@ -79,6 +79,12 @@ html, body, [class*="css"] {
 .kpi-amber { border-left: 3px solid #d29922; }
 .kpi-blue  { border-left: 3px solid #58a6ff; }
 .kpi-green { border-left: 3px solid #3fb950; }
+
+.kpi-red:hover { box-shadow: 0 8px 24px rgba(248, 81, 73, 0.15); border-color: #f85149; transform: translateY(-3px); }
+.kpi-amber:hover { box-shadow: 0 8px 24px rgba(210, 153, 34, 0.15); border-color: #d29922; transform: translateY(-3px); }
+.kpi-blue:hover { box-shadow: 0 8px 24px rgba(88, 166, 255, 0.15); border-color: #58a6ff; transform: translateY(-3px); }
+.kpi-green:hover { box-shadow: 0 8px 24px rgba(63, 185, 80, 0.15); border-color: #3fb950; transform: translateY(-3px); }
+
 
 /* Section headers */
 .section-header {
@@ -125,6 +131,7 @@ p, li { color: #8b949e; }
 # ── Matplotlib dark theme ────────────────────────────────────────────────────
 plt.rcParams.update({
     "figure.facecolor": "#0d1117",
+    "figure.dpi": 200,
     "axes.facecolor": "#161b22",
     "axes.edgecolor": "#30363d",
     "axes.labelcolor": "#8b949e",
@@ -176,12 +183,92 @@ def load_db_stats():
 def load_delayed():
     return db.load_table("delayed_projects")
 
-def _check_db():
-    stats = load_db_stats()
-    return any(v > 0 for v in stats.values())
+def _check_initialized():
+    try:
+        stats = load_db_stats()
+        db_ok = any(v > 0 for v in stats.values())
+    except Exception:
+        db_ok = False
+        
+    from src.model import MODEL_DIR
+    models_ok = (
+        os.path.exists(os.path.join(MODEL_DIR, "cor_model.joblib")) and
+        os.path.exists(os.path.join(MODEL_DIR, "delay_model.joblib"))
+    )
+    return db_ok and models_ok
+
+if not _check_initialized():
+    st.markdown("<h1 style='text-align: center; color: #f0f6fc; margin-top: 50px;'>🏗️ InfraForecast System Setup</h1>", unsafe_allow_html=True)
+    st.markdown(
+        "<p style='text-align: center; color: #8b949e; font-size: 1.1rem; max-width: 600px; margin: 0 auto;'>"
+        "Welcome to InfraForecast. The system database and forecasting models need to be initialized "
+        "by downloading and parsing the quarterly MoSPI Central Sector project reports (Apr–Sep 2024)."
+        "</p>",
+        unsafe_allow_html=True
+    )
+    
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown("""
+        <div style='background: linear-gradient(135deg, rgba(22,27,34,0.9) 0%, rgba(33,38,45,0.9) 100%); border: 1px solid #30363d; border-radius: 12px; padding: 30px; text-align: center; box-shadow: 0 4px 20px rgba(0,0,0,0.5);'>
+            <div style='font-size: 1.2rem; font-weight: 600; color: #58a6ff; margin-bottom: 12px;'>Initialize Analytics & Forecasting Models</div>
+            <div style='font-size: 0.85rem; color: #8b949e; margin-bottom: 24px; text-align: left; line-height: 1.5;'>
+                <b>This process will automatically:</b><br>
+                1. Resolve cached/downloaded quarterly reports.<br>
+                2. Extract projects from structured tables & Annexures.<br>
+                3. Construct database schema and insert parsed records.<br>
+                4. Train dual Ridge Regression models for cost & delay predictions.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("🔮 Bootstrap Dashboard & Train Models", use_container_width=True, type="primary"):
+            status_placeholder = st.empty()
+            progress_bar = st.progress(0.0)
+            
+            with st.spinner("Extracting government PDFs and training regression models..."):
+                status_placeholder.info("Starting bootstrap pipeline...")
+                progress_bar.progress(0.1)
+                
+                from src import pipeline
+                from src.pdf_parser import REPORTS, PDF_DIR, _is_valid_pdf
+                
+                needs_download = False
+                for r in REPORTS:
+                    fname = r["url"].split("/")[-1]
+                    fpath = os.path.join(PDF_DIR, fname)
+                    if not _is_valid_pdf(fpath):
+                        needs_download = True
+                        break
+                
+                if needs_download:
+                    status_placeholder.info("Downloading ~30MB of MoSPI reports (this might take a minute)...")
+                    progress_bar.progress(0.3)
+                else:
+                    status_placeholder.info("Parsing cached MoSPI reports...")
+                    progress_bar.progress(0.4)
+                
+                res = pipeline.run()
+                
+                if res.get("success", False):
+                    progress_bar.progress(1.0)
+                    status_placeholder.success("System initialized successfully! Loading dashboard...")
+                    st.balloons()
+                    st.cache_data.clear()
+                    import time
+                    time.sleep(1.5)
+                    st.rerun()
+                else:
+                    progress_bar.empty()
+                    status_placeholder.error(f"Setup failed: {res.get('error', 'Unknown error')}")
+                    
+    st.stop()
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
+
 
 with st.sidebar:
     st.markdown("""
@@ -208,8 +295,12 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    if not _check_db():
-        st.warning("⚠️ No data in DB. Run: `python src/pipeline.py` first.")
+    st.markdown("""
+    <div style="font-size:0.75rem; color:#3fb950; font-weight:600; display:flex; align-items:center; gap:6px; margin-top:10px;">
+      <span style="height:8px; width:8px; background-color:#3fb950; border-radius:50%; display:inline-block; box-shadow: 0 0 8px #3fb950;"></span>
+      System Calibrated & Online
+    </div>
+    """, unsafe_allow_html=True)
 
 
 # ── Helper: kpi_card ─────────────────────────────────────────────────────────

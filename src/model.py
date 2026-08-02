@@ -15,6 +15,7 @@ Saves trained models + feature importance to data/models/.
 import os
 import logging
 import joblib
+import json
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import Ridge
@@ -106,10 +107,21 @@ def train_models(df: pd.DataFrame) -> dict:
         os.makedirs(MODEL_DIR, exist_ok=True)
         model_path = os.path.join(MODEL_DIR, f"{label}_model.joblib")
         importance_path = os.path.join(MODEL_DIR, f"{label}_importance.csv")
+        metadata_path = os.path.join(MODEL_DIR, f"{label}_metadata.json")
 
         joblib.dump(pipe, model_path)
         importance_df.to_csv(importance_path, index=False)
-        logger.info("Saved model -> %s", model_path)
+        
+        # Save training metadata to clamp predictions during sandbox testing
+        metadata = {
+            "max_target": float(valid[target].max()) if len(valid) > 0 else 500.0,
+            "mean_target": float(valid[target].mean()) if len(valid) > 0 else 0.0,
+            "n_samples": int(len(valid))
+        }
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=4)
+            
+        logger.info("Saved model -> %s and metadata -> %s", model_path, metadata_path)
 
         results[label] = {
             "model": pipe,
@@ -149,7 +161,20 @@ def predict(sector: str, state: str, original_cost_cr: float) -> dict:
                 pred_log = model.predict(input_df)[0]
                 # Inverse transform of log1p: expm1
                 pred_orig = np.expm1(pred_log)
-                output[key] = max(0.0, round(float(pred_orig), 2))
+                
+                # Check for target clamping bounds from metadata to avoid extreme extrapolation
+                max_cap = 1000.0 if label == "cor" else 480.0
+                meta_path = os.path.join(MODEL_DIR, f"{label}_metadata.json")
+                if os.path.exists(meta_path):
+                    try:
+                        with open(meta_path, "r", encoding="utf-8") as f:
+                            meta = json.load(f)
+                            max_cap = meta.get("max_target", max_cap)
+                    except Exception:
+                        pass
+                
+                final_val = min(float(pred_orig), max_cap)
+                output[key] = max(0.0, round(final_val, 2))
             except Exception as e:
                 logger.warning("Prediction failed for %s: %s", label, e)
                 output[key] = None

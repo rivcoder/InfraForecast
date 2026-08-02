@@ -123,6 +123,59 @@ class TestModelFeatures(unittest.TestCase):
         self.assertIn("cost_overrun_pct", result)
         self.assertIn("delay_months", result)
 
+    def test_train_and_predict_flow(self):
+        """Verify model training saves pipeline files, creates metadata, and respects caps."""
+        from src.model import train_models, predict, MODEL_DIR
+        import shutil
+        import json
+        
+        # Back up existing models to not disrupt active ones
+        backup_dir = MODEL_DIR + "_unittest_bak"
+        if os.path.exists(MODEL_DIR):
+            shutil.copytree(MODEL_DIR, backup_dir, dirs_exist_ok=True)
+            
+        try:
+            # Create a mock training dataframe with at least 10 samples
+            mock_df = pd.DataFrame([
+                {"sector": "Railways", "state": "PUNJAB", "original_cost": 100.0, "cost_overrun_pct": 10.0, "delay_months": 12.0},
+                {"sector": "Roads", "state": "HARYANA", "original_cost": 200.0, "cost_overrun_pct": 20.0, "delay_months": 24.0},
+                {"sector": "Railways", "state": "PUNJAB", "original_cost": 150.0, "cost_overrun_pct": 15.0, "delay_months": 18.0},
+                {"sector": "Roads", "state": "HARYANA", "original_cost": 250.0, "cost_overrun_pct": 25.0, "delay_months": 30.0},
+                {"sector": "Power", "state": "PUNJAB", "original_cost": 300.0, "cost_overrun_pct": 30.0, "delay_months": 36.0},
+                {"sector": "Power", "state": "HARYANA", "original_cost": 350.0, "cost_overrun_pct": 35.0, "delay_months": 42.0},
+                {"sector": "Railways", "state": "PUNJAB", "original_cost": 400.0, "cost_overrun_pct": 40.0, "delay_months": 48.0},
+                {"sector": "Roads", "state": "HARYANA", "original_cost": 450.0, "cost_overrun_pct": 45.0, "delay_months": 54.0},
+                {"sector": "Power", "state": "PUNJAB", "original_cost": 500.0, "cost_overrun_pct": 50.0, "delay_months": 60.0},
+                {"sector": "Power", "state": "HARYANA", "original_cost": 550.0, "cost_overrun_pct": 55.0, "delay_months": 66.0},
+            ])
+            
+            # Train models
+            res = train_models(mock_df)
+            self.assertIn("cor", res)
+            self.assertIn("delay", res)
+            
+            # Check metadata files exist
+            cor_meta_path = os.path.join(MODEL_DIR, "cor_metadata.json")
+            self.assertTrue(os.path.exists(cor_meta_path))
+            
+            with open(cor_meta_path, "r", encoding="utf-8") as f:
+                cor_meta = json.load(f)
+                self.assertEqual(cor_meta["max_target"], 55.0)
+                
+            # Test predict clamping on massive input cost
+            pred = predict("Railways", "PUNJAB", 1000000.0) # Huge budget
+            self.assertLessEqual(pred["cost_overrun_pct"], 55.0)
+            
+        finally:
+            # Restore backups if they existed
+            if os.path.exists(backup_dir):
+                shutil.copytree(backup_dir, MODEL_DIR, dirs_exist_ok=True)
+                try:
+                    shutil.rmtree(backup_dir)
+                except Exception:
+                    pass
+
+
 
 class TestCostOverrunDerivation(unittest.TestCase):
     def test_cor_pct_calculation(self):
